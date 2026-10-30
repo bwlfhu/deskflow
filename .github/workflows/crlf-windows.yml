@@ -1,0 +1,58 @@
+# SPDX-FileCopyrightText: (C) 2026 Deskflow Developers
+# SPDX-License-Identifier: MIT
+name: CRLF Windows build
+on:
+  push:
+    branches: [fix/clipboard-crlf]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: amd64
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: win64_msvc2022_64
+          cache: true
+      - name: Install OpenSSL
+        shell: pwsh
+        run: |
+          & "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe" install openssl:x64-windows
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_INSTALLER=OFF -DSKIP_BUILD_TESTS=ON "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" -DVCPKG_MANIFEST_MODE=OFF -DVCPKG_TARGET_TRIPLET=x64-windows
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+      - name: Build
+        run: cmake --build build --parallel 4
+      - name: Test
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: ctest --test-dir build/src/unittests --output-on-failure
+      - name: Stage portable build
+        shell: pwsh
+        run: |
+          cmake --install build --prefix stage
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          git rev-parse HEAD | Set-Content stage/CRLF-REVISION.txt
+          Get-ChildItem stage -File -Recurse | Get-FileHash -Algorithm SHA256 | Format-Table -AutoSize | Out-String -Width 300 | Set-Content stage/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deskflow-crlf-windows-x64
+          path: stage/
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crlf-test-logs
+          path: build/src/unittests/Testing/Temporary/
