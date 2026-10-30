@@ -1,6 +1,16 @@
 # SPDX-FileCopyrightText: (C) 2025 Deskflow Developers
 # SPDX-License-Identifier: MIT
 
+if(WIN32 OR APPLE)
+  create_test(
+    NAME ClipboardLineEndingTests
+    DEPENDS platform
+    LIBS base arch
+    SOURCE ClipboardLineEndingTests.cpp
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/platform"
+  )
+endif()
+
 if (WIN32)
   create_test(
     NAME MSWindowsClipboardTests
