@@ -62,26 +62,28 @@ std::string MSWindowsClipboardAnyTextConverter::toIClipboard(HANDLE data) const
 std::string MSWindowsClipboardAnyTextConverter::convertLinefeedToWin32(const std::string &src) const
 {
   // note -- we assume src is a valid UTF-8 string
+  // Normalize existing CRLF and CR before adding Windows line endings.
+  const auto normalized = convertLinefeedToUnix(src);
 
   // count newlines in string
   uint32_t numNewlines = 0;
-  uint32_t n = (uint32_t)src.size();
-  for (const char *scan = src.c_str(); n > 0; ++scan, --n) {
+  uint32_t n = (uint32_t)normalized.size();
+  for (const char *scan = normalized.c_str(); n > 0; ++scan, --n) {
     if (*scan == '\n') {
       ++numNewlines;
     }
   }
   if (numNewlines == 0) {
-    return src;
+    return normalized;
   }
 
   // allocate new string
   std::string dst;
-  dst.reserve(src.size() + numNewlines);
+  dst.reserve(normalized.size() + numNewlines);
 
   // copy string, converting newlines
-  n = (uint32_t)src.size();
-  for (const char *scan = src.c_str(); n > 0; ++scan, --n) {
+  n = (uint32_t)normalized.size();
+  for (const char *scan = normalized.c_str(); n > 0; ++scan, --n) {
     if (scan[0] == '\n') {
       dst += '\r';
     }
@@ -93,27 +95,18 @@ std::string MSWindowsClipboardAnyTextConverter::convertLinefeedToWin32(const std
 
 std::string MSWindowsClipboardAnyTextConverter::convertLinefeedToUnix(const std::string &src) const
 {
-  // count newlines in string
-  uint32_t numNewlines = 0;
-  uint32_t n = (uint32_t)src.size();
-  for (const char *scan = src.c_str(); n > 0; ++scan, --n) {
-    if (scan[0] == '\r' && scan[1] == '\n') {
-      ++numNewlines;
-    }
-  }
-  if (numNewlines == 0) {
-    return src;
-  }
-
-  // allocate new string
   std::string dst;
   dst.reserve(src.size());
 
-  // copy string, converting newlines
-  n = (uint32_t)src.size();
-  for (const char *scan = src.c_str(); n > 0; ++scan, --n) {
-    if (scan[0] != '\r' || scan[1] != '\n') {
-      dst += scan[0];
+  // Treat CRLF as one newline and preserve standalone CR as a newline.
+  for (std::string::size_type i = 0; i < src.size(); ++i) {
+    if (src[i] == '\r') {
+      if (i + 1 < src.size() && src[i + 1] == '\n') {
+        ++i;
+      }
+      dst += '\n';
+    } else {
+      dst += src[i];
     }
   }
 
