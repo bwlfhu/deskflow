@@ -21,10 +21,10 @@ jobs:
         include:
           - runner: macos-15
             arch: arm64
-            deployment: '13.0'
+            deployment: '15.0'
           - runner: macos-15-intel
             arch: x86_64
-            deployment: '12.0'
+            deployment: '15.0'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,12 +74,14 @@ jobs:
           macdeployqt "$app" -executable="$app/Contents/MacOS/deskflow-core" -always-overwrite -no-strip -codesign=-
           codesign --verify --deep --strict --verbose=2 "$app"
           file "$app/Contents/MacOS/Deskflow" "$app/Contents/MacOS/deskflow-core" | tee architecture.txt
-          lipo -verify_arch ${{ matrix.arch }} "$app/Contents/MacOS/Deskflow"
-          lipo -verify_arch ${{ matrix.arch }} "$app/Contents/MacOS/deskflow-core"
+          lipo "$app/Contents/MacOS/Deskflow" -verify_arch ${{ matrix.arch }}
+          lipo "$app/Contents/MacOS/deskflow-core" -verify_arch ${{ matrix.arch }}
           while IFS= read -r -d '' path; do
             if file "$path" | grep -q 'Mach-O'; then
               printf '%s\n' "${path#"$PWD/stage/"}" >> dylib-audit.txt
               otool -L "$path" | tail -n +2 >> dylib-audit.txt
+              printf '%s\n' "${path#"$PWD/stage/"}" >> minimum-os-audit.txt
+              otool -l "$path" | awk '/LC_BUILD_VERSION/{kind=1} /LC_VERSION_MIN_MACOSX/{kind=2} kind==1 && /minos /{print;kind=0} kind==2 && /version /{print;kind=0}' >> minimum-os-audit.txt
             fi
           done < <(find "$app" -type f -print0)
           if grep -E '/opt/homebrew/|/usr/local/|/Users/runner/|/opt/hostedtoolcache/' dylib-audit.txt; then
@@ -95,9 +97,9 @@ jobs:
           name="deskflow-crlf-1576cfc3-macos-${{ matrix.arch }}.zip"
           ditto -c -k --sequesterRsrc --keepParent stage/Deskflow.app "dist/$name"
           shasum -a 256 "dist/$name" | sed 's|dist/||' > "dist/$name.sha256"
-          printf 'Source revision: %s\nArchitecture: %s\nMinimum macOS deployment target: %s\nSignature: ad-hoc, not Apple-notarized\n' "$SOURCE_REVISION" '${{ matrix.arch }}' '${{ matrix.deployment }}' > "dist/build-${{ matrix.arch }}.txt"
+          printf 'Source revision: %s\nArchitecture: %s\nMinimum supported macOS: %s (built and tested on macOS 15)\nSignature: ad-hoc, not Apple-notarized\n' "$SOURCE_REVISION" '${{ matrix.arch }}' '${{ matrix.deployment }}' > "dist/build-${{ matrix.arch }}.txt"
           cat version.txt >> "dist/build-${{ matrix.arch }}.txt"
-          cp converter-tests.txt other-tests.txt architecture.txt version.txt dylib-audit.txt dist/
+          cp converter-tests.txt other-tests.txt architecture.txt version.txt dylib-audit.txt minimum-os-audit.txt dist/
       - uses: actions/upload-artifact@v4
         with:
           name: deskflow-crlf-macos-${{ matrix.arch }}
@@ -133,7 +135,7 @@ jobs:
           cd release
           cat *.sha256 > SHA256SUMS.txt
           sha256sum --check SHA256SUMS.txt
-          printf '%s\n' 'Deskflow macOS builds from CRLF repair source 1576cfc38de3f473fa5efea0ccfc14c9fdac4d25, matching the deployed Windows repair.' '' 'Choose arm64 for Apple Silicon or x86_64 for Intel. Both packages include Deskflow.app and bundled Qt dependencies. Converter regression tests and other applicable unit tests passed; OSXKeyStateTests requires hardware input permissions and was excluded. These are local-use ad-hoc signed builds, not Apple-notarized releases. Back up the existing app and configuration before installation. macOS may require renewed Accessibility approval.' > notes.md
+          printf '%s\n' 'Deskflow macOS builds from CRLF repair source 1576cfc38de3f473fa5efea0ccfc14c9fdac4d25, matching the deployed Windows repair.' '' 'Requires macOS 15 or later. Choose arm64 for Apple Silicon or x86_64 for Intel. Both packages include Deskflow.app and bundled Qt dependencies. Converter regression tests and other applicable unit tests passed; OSXKeyStateTests requires hardware input permissions and was excluded. These are local-use ad-hoc signed builds, not Apple-notarized releases. Back up the existing app and configuration before installation. macOS may require renewed Accessibility approval.' > notes.md
           tag=crlf-macos-20261030
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" ./*.zip ./*.sha256 ./SHA256SUMS.txt ./build-*.txt --clobber
