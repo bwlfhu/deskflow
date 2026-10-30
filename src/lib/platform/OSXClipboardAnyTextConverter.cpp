@@ -35,15 +35,10 @@ static bool isLF(char ch)
   return (ch == '\n');
 }
 
-static bool isCR(char ch)
-{
-  return (ch == '\r');
-}
-
 std::string OSXClipboardAnyTextConverter::convertLinefeedToMacOS(const std::string &src)
 {
   // note -- we assume src is a valid UTF-8 string
-  std::string copy = src;
+  std::string copy = convertLinefeedToUnix(src);
 
   std::replace_if(copy.begin(), copy.end(), isLF, '\r');
 
@@ -52,9 +47,20 @@ std::string OSXClipboardAnyTextConverter::convertLinefeedToMacOS(const std::stri
 
 std::string OSXClipboardAnyTextConverter::convertLinefeedToUnix(const std::string &src)
 {
-  std::string copy = src;
+  std::string copy;
+  copy.reserve(src.size());
 
-  std::replace_if(copy.begin(), copy.end(), isCR, '\n');
+  // Consume CRLF together so it cannot turn into two LF characters.
+  for (std::string::size_type i = 0; i < src.size(); ++i) {
+    if (src[i] == '\r') {
+      if (i + 1 < src.size() && src[i + 1] == '\n') {
+        ++i;
+      }
+      copy += '\n';
+    } else {
+      copy += src[i];
+    }
+  }
 
   return copy;
 }
