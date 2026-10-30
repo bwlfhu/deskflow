@@ -1,0 +1,3 @@
+
+
+Verified 2026-10-30: original extracted methods fail 10 of 24 checks, repaired methods pass all 24; repository CTest fixture passes 26 checks and fails 2 checks when the old production geometry guard is restored in an isolated source copy. Geometry policy passes 53,826 checks. MSVC builds the core and the three targeted CTest executables; all 3 pass. Independent final review found no blocking P1/P2 issue. Full application/UI translation rebuild is unnecessary for this core-only change; deployment will retain the existing GUI, daemon and DLLs after verifying the new core against that exact runtime.

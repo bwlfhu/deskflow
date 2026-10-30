@@ -12,6 +12,14 @@ if(WIN32 OR APPLE)
 endif()
 
 if (WIN32)
+  include(MSWindowsComputerEventTests.cmake)
+  create_test(
+    NAME MSWindowsMouseMotionTests
+    DEPENDS platform
+    LIBS base arch
+    SOURCE MSWindowsMouseMotionTests.cpp
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/platform"
+  )
   create_test(
     NAME MSWindowsClipboardTests
     DEPENDS platform

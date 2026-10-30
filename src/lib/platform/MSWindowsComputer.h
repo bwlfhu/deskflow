@@ -10,6 +10,7 @@
 
 #include "deskflow/PlatformComputer.h"
 #include "platform/MSWindowsHook.h"
+#include "platform/MSWindowsMouseMotion.h"
 #include "platform/MSWindowsPowerManager.h"
 
 #include <map>
@@ -176,7 +177,7 @@ private: // HACK
   void onClipboardChange();
 
   // warp cursor without discarding queued events
-  void warpCursorNoFlush(int32_t x, int32_t y);
+  POINT warpCursorNoFlush(int32_t x, int32_t y);
 
   // discard posted messages
   void nextMark();
@@ -269,6 +270,8 @@ private:
   int32_t m_h = 0;
   int32_t m_xCenter = 0;
   int32_t m_yCenter = 0;
+
+  deskflow::platform::MouseBounds m_parkingMonitorBounds{0, 0, 0, 0};
 
   // true if system appears to have multiple monitors
   bool m_multimon = false;

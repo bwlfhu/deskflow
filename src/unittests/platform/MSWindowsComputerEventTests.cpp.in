@@ -1,0 +1,378 @@
+/*
+ * Deskflow -- mouse and keyboard sharing utility
+ * SPDX-FileCopyrightText: (C) 2026 Deskflow Developers
+ * SPDX-License-Identifier: GPL-2.0-only WITH LicenseRef-OpenSSL-Exception
+ */
+
+// Production methods below are inserted verbatim at CMake configure time.
+// The fake OS/event boundary keeps all input and clipboard state isolated.
+
+#include <algorithm>
+#include <cstdint>
+#include <iostream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+#if __has_include("platform/MSWindowsMouseMotion.h")
+#include "platform/MSWindowsMouseMotion.h"
+#else
+namespace deskflow::platform {
+struct MouseBounds {
+  int32_t left, top, right, bottom;
+};
+} // namespace deskflow::platform
+#endif
+#define LOG_DEBUG(...) ((void)0)
+#define LOG_VERBOSE(...) ((void)0)
+#define LOG_WARN(...) ((void)0)
+using DWORD = uint32_t;
+using HWND = void *;
+using WPARAM = uintptr_t;
+using LPARAM = intptr_t;
+struct POINT {
+  int32_t x, y;
+};
+struct RECT {
+  int32_t left, top, right, bottom;
+};
+struct GUITHREADINFO {
+  uint32_t cbSize = 0;
+  HWND hwndCapture = 0;
+};
+struct MSG {
+  unsigned message;
+  WPARAM wParam;
+  LPARAM lParam;
+};
+#define WM_APP 0x8000
+#define WM_QUIT 0x0012
+@MESSAGE_DEFINITIONS@
+static RECT clip{0, 0, 3840, 1080};
+static HWND capture = nullptr;
+static bool clipKnown = true, guiKnown = true;
+static POINT nativeCursor{960, 540};
+static bool nativeSetSuccess = true;
+static DWORD captureOwner = 77;
+static int queueStatus = 1;
+static bool quitReposted = false;
+static std::vector<MSG> messages;
+static size_t consumed = 0;
+constexpr unsigned PM_REMOVE = 1;
+namespace Arch {
+void sleep(double) {}
+} // namespace Arch
+DWORD GetCurrentThreadId() { return 1; }
+bool PostThreadMessage(DWORD, unsigned message, WPARAM w, LPARAM l) {
+  messages.push_back({message, w, l});
+  return true;
+}
+bool PeekMessage(MSG *m, void *, unsigned first, unsigned last, unsigned) {
+  for (size_t i = 0; i < messages.size(); ++i) {
+    if (messages[i].message >= first && messages[i].message <= last) {
+      *m = messages[i];
+      messages.erase(messages.begin() + i);
+      ++consumed;
+      return true;
+    }
+  }
+  return false;
+}
+bool GetClipCursor(RECT *r) {
+  *r = clip;
+  return clipKnown;
+}
+bool GetGUIThreadInfo(DWORD, GUITHREADINFO *g) {
+  g->hwndCapture = capture;
+  return guiKnown;
+}
+DWORD GetWindowThreadProcessId(HWND, DWORD *p) {
+  *p = captureOwner;
+  return 1;
+}
+DWORD GetCurrentProcessId() { return 10; }
+int GetMessage(MSG *m, void *, unsigned first, unsigned last) {
+  if (queueStatus == -1)
+    return -1;
+  for (size_t i = 0; i < messages.size(); ++i) {
+    if (messages[i].message == WM_QUIT ||
+        (messages[i].message >= first && messages[i].message <= last)) {
+      *m = messages[i];
+      messages.erase(messages.begin() + i);
+      ++consumed;
+      return m->message == WM_QUIT ? 0 : 1;
+    }
+  }
+  throw std::runtime_error("warp queue drained without terminating");
+}
+void PostQuitMessage(int) { quitReposted = true; }
+enum class EventTypes {
+  PrimaryComputerMotionOnPrimary,
+  PrimaryComputerMotionOnSecondary
+};
+struct MotionInfo {
+  int32_t x, y;
+  static MotionInfo *alloc(int32_t x, int32_t y) {
+    return new MotionInfo{x, y};
+  }
+};
+class MSWindowsComputer {
+public:
+  int32_t m_x = 0, m_y = 0, m_w = 3840, m_h = 1080, m_xCenter = 960,
+          m_yCenter = 540, m_xCursor = 960, m_yCursor = 540;
+  deskflow::platform::MouseBounds m_parkingMonitorBounds{0, 0, 1920, 1080};
+  bool m_isPrimary = true, m_isOnComputer = false, stale = false,
+       cursorReadable = true;
+  int sent = 0;
+  MotionInfo last{0, 0};
+  bool ignore() const { return stale; }
+  void saveMousePosition(int32_t x, int32_t y) {
+    m_xCursor = x;
+    m_yCursor = y;
+  }
+  void setThisCursorPos(int32_t x, int32_t y) {
+    if (nativeSetSuccess)
+      nativeCursor = {std::max(clip.left, std::min(x, clip.right - 1)),
+                      std::max(clip.top, std::min(y, clip.bottom - 1))};
+  }
+  void fakeMouseMove(int32_t x, int32_t y) { setThisCursorPos(x, y); }
+  bool isPrimary() const { return m_isPrimary; }
+  bool getThisCursorPos(POINT *p) {
+    if (!cursorReadable)
+      return false;
+    *p = nativeCursor;
+    return true;
+  }
+  void warpCursor(int32_t, int32_t);
+  POINT warpCursorNoFlush(int32_t, int32_t);
+  void sendEvent(EventTypes, MotionInfo *info) {
+    ++sent;
+    last = *info;
+    delete info;
+  }
+  bool onMouseMove(int32_t, int32_t);
+  bool canLeave();
+  bool preWarp(WPARAM wParam, LPARAM lParam) {
+    switch (DESKFLOW_MSG_PRE_WARP) {
+    @PRE_WARP_CASE@
+    default:
+      return false;
+    }
+  }
+};
+
+@ON_MOUSE_MOVE@
+@CAN_LEAVE@
+@WARP_CURSOR@
+@WARP_NO_FLUSH@
+
+int failures = 0, checks = 0;
+void check(bool value, const char *label) {
+  ++checks;
+  if (!value) {
+    ++failures;
+    std::cout << "FAIL " << label << '\n';
+  }
+}
+int main() {
+  {
+    MSWindowsComputer c;
+    c.onMouseMove(2860, 540);
+    check(c.sent == 0, "dual-monitor stale +1900 delta must not reach Mac");
+  }
+  {
+    MSWindowsComputer c;
+    c.m_x = -1920;
+    c.m_w = 5760;
+    c.onMouseMove(2860, 540);
+    check(c.sent == 0,
+          "negative desktop origin must not loosen parking-monitor guard");
+  }
+  {
+    MSWindowsComputer c;
+    c.onMouseMove(1460, 540);
+    check(c.sent == 1 && c.last.x == 500,
+          "normal fast +500 move remains usable");
+  }
+  {
+    MSWindowsComputer c;
+    c.onMouseMove(460, 540);
+    check(c.sent == 1 && c.last.x == -500,
+          "normal fast -500 move remains usable");
+  }
+  {
+    MSWindowsComputer c;
+    c.m_w = 1920;
+    c.onMouseMove(2860, 540);
+    check(c.sent == 0, "single-monitor existing guard remains protected");
+  }
+  {
+    MSWindowsComputer c;
+    c.stale = true;
+    c.onMouseMove(965, 540);
+    check(c.sent == 0, "stale marked event remains ignored");
+  }
+  {
+    MSWindowsComputer c;
+    c.m_isOnComputer = true;
+    c.onMouseMove(0, 540);
+    check(c.sent == 1 && c.last.x == 0,
+          "local edge motion still reaches switching policy");
+  }
+  {
+    MSWindowsComputer c;
+    c.m_xCursor = 12;
+    c.m_yCursor = 34;
+    messages = {{DESKFLOW_MSG_MOUSE_MOVE, 400, 300},
+                {DESKFLOW_MSG_POST_WARP, 500, 400}};
+    consumed = 0;
+    c.preWarp(960, 540);
+    check(c.m_xCursor == 500 && c.m_yCursor == 400,
+          "warp origin must use measured POST position, not requested point");
+    check(consumed == 2, "warp-generated messages drained through POST marker");
+  }
+  {
+    MSWindowsComputer c;
+    capture = reinterpret_cast<HWND>(123);
+    check(!c.canLeave(), "foreign mouse capture prevents automatic departure");
+    capture = nullptr;
+  }
+  {
+    MSWindowsComputer c;
+    clip = {1920, 0, 3840, 1080};
+    check(!c.canLeave(),
+          "clipping that excludes parking point prevents departure");
+    clip = {0, 0, 3840, 1080};
+  }
+  {
+    MSWindowsComputer c;
+    check(c.canLeave(), "ordinary desktop remains switchable");
+  }
+  {
+    MSWindowsComputer c;
+    clip = {0, 0, 1920, 1080};
+    check(c.canLeave(), "full primary-monitor clipping still permits parking");
+    clip = {0, 0, 3840, 1080};
+  }
+  {
+    MSWindowsComputer c;
+    c.m_isPrimary = false;
+    capture = reinterpret_cast<HWND>(123);
+    clip = {1920, 0, 3840, 1080};
+    check(
+        c.canLeave(),
+        "secondary computer departure is unaffected by server parking policy");
+    capture = nullptr;
+    clip = {0, 0, 3840, 1080};
+  }
+  {
+    MSWindowsComputer c;
+    c.cursorReadable = false;
+    check(!c.canLeave(), "unreadable cursor remains non-leavable");
+  }
+  {
+    MSWindowsComputer c;
+    messages.clear();
+    consumed = 0;
+    clip = {1920, 0, 3840, 1080};
+    c.warpCursor(960, 540);
+    check(c.m_xCursor == 1920 && c.m_yCursor == 540,
+          "flushed warp also uses clamped actual position");
+    clip = {0, 0, 3840, 1080};
+  }
+  {
+    MSWindowsComputer c;
+    messages.clear();
+    consumed = 0;
+    nativeSetSuccess = false;
+    nativeCursor = {400, 300};
+    c.warpCursor(960, 540);
+    check(c.m_xCursor == 400 && c.m_yCursor == 300,
+          "failed SetCursorPos retains actual origin");
+    nativeSetSuccess = true;
+  }
+  {
+    MSWindowsComputer c;
+    messages.clear();
+    consumed = 0;
+    c.cursorReadable = false;
+    c.m_xCursor = 12;
+    c.m_yCursor = 34;
+    c.warpCursor(960, 540);
+    check(c.m_xCursor == 12 && c.m_yCursor == 34,
+          "failed position read preserves last observed origin");
+  }
+  {
+    MSWindowsComputer c;
+    capture = reinterpret_cast<HWND>(123);
+    captureOwner = 10;
+    check(c.canLeave(), "Deskflow's own capture does not block departure");
+    capture = nullptr;
+    captureOwner = 77;
+  }
+  {
+    MSWindowsComputer c;
+    capture = reinterpret_cast<HWND>(123);
+    captureOwner = 0;
+    check(c.canLeave(),
+          "unknown capture owner does not permanently lock input");
+    capture = nullptr;
+    captureOwner = 77;
+  }
+  {
+    MSWindowsComputer c;
+    guiKnown = false;
+    capture = reinterpret_cast<HWND>(123);
+    check(c.canLeave(), "GUI query failure does not permanently lock input");
+    guiKnown = true;
+    capture = nullptr;
+  }
+  {
+    MSWindowsComputer c;
+    clipKnown = false;
+    clip = {1920, 0, 3840, 1080};
+    check(c.canLeave(), "clip query failure does not permanently lock input");
+    clipKnown = true;
+    clip = {0, 0, 3840, 1080};
+  }
+  {
+    MSWindowsComputer c;
+    messages = {{WM_QUIT, 0, 0}};
+    consumed = 0;
+    quitReposted = false;
+    c.preWarp(960, 540);
+    check(quitReposted, "quit encountered while draining warp is reposted");
+    queueStatus = 1;
+  }
+  {
+    MSWindowsComputer c;
+    messages = {{DESKFLOW_MSG_POST_WARP, 500, 400}};
+    consumed = 0;
+    queueStatus = -1;
+    c.m_xCursor = 12;
+    c.m_yCursor = 34;
+    c.preWarp(960, 540);
+    check(c.m_xCursor == 12 && c.m_yCursor == 34,
+          "queue error does not use invalid warp coordinates");
+    queueStatus = 1;
+  }
+  {
+    MSWindowsComputer c;
+    messages = {{DESKFLOW_MSG_KEY, 42, 0},
+                {DESKFLOW_MSG_MOUSE_MOVE, 400, 300},
+                {DESKFLOW_MSG_POST_WARP, 500, 400}};
+    consumed = 0;
+    c.preWarp(960, 540);
+    check(messages.size() == 1 && messages[0].message == DESKFLOW_MSG_KEY,
+          "warp drain preserves unrelated key messages");
+  }
+  {
+    MSWindowsComputer c;
+    messages = {{WM_APP + 0x18, 0, 0}};
+    consumed = 0;
+    c.warpCursor(960, 540);
+    check(messages.size() == 1 && messages[0].message == WM_APP + 0x18,
+          "flushed warp preserves messages outside the input range");
+  }
+  std::cout << checks << " checks, " << failures << " failures\n";
+  return failures ? 1 : 0;
+}

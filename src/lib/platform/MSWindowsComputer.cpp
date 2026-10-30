@@ -274,6 +274,26 @@ bool MSWindowsComputer::canLeave()
     return false;
   }
 
+  if (m_isPrimary) {
+    GUITHREADINFO guiInfo{};
+    guiInfo.cbSize = sizeof(guiInfo);
+    if (GetGUIThreadInfo(0, &guiInfo) && guiInfo.hwndCapture != nullptr) {
+      DWORD owner = 0;
+      GetWindowThreadProcessId(guiInfo.hwndCapture, &owner);
+      if (owner != 0 && owner != GetCurrentProcessId()) {
+        LOG_DEBUG("not leaving while another process captures the mouse");
+        return false;
+      }
+    }
+
+    RECT clip{};
+    if (GetClipCursor(&clip) &&
+        !deskflow::platform::MouseBounds{clip.left, clip.top, clip.right, clip.bottom}.contains(m_xCenter, m_yCenter)) {
+      LOG_DEBUG("not leaving while cursor clipping excludes the parking point");
+      return false;
+    }
+  }
+
   return true;
 }
 
@@ -518,7 +538,7 @@ uint32_t MSWindowsComputer::activeSides()
 void MSWindowsComputer::warpCursor(int32_t x, int32_t y)
 {
   // warp mouse
-  warpCursorNoFlush(x, y);
+  const auto actual = warpCursorNoFlush(x, y);
 
   // remove all input events before and including warp
   MSG msg;
@@ -527,7 +547,7 @@ void MSWindowsComputer::warpCursor(int32_t x, int32_t y)
   }
 
   // save position to compute delta of next motion
-  saveMousePosition(x, y);
+  saveMousePosition(actual.x, actual.y);
 }
 
 void MSWindowsComputer::saveMousePosition(int32_t x, int32_t y)
@@ -902,18 +922,25 @@ bool MSWindowsComputer::onPreDispatchPrimary(HWND, UINT message, WPARAM wParam, 
     return onMouseWheel(static_cast<int32_t>(lParam), static_cast<int32_t>(wParam));
 
   case DESKFLOW_MSG_PRE_WARP: {
-    // save position to compute delta of next motion
-    saveMousePosition(static_cast<int32_t>(wParam), static_cast<int32_t>(lParam));
-
     // we warped the mouse.  discard events until we find the
     // matching post warp event.  see warpCursorNoFlush() for
     // where the events are sent.  we discard the matching
     // post warp event and can be sure we've skipped the warp
     // event.
-    MSG msg;
+    MSG msg{};
     do {
-      GetMessage(&msg, nullptr, DESKFLOW_MSG_MOUSE_MOVE, DESKFLOW_MSG_POST_WARP);
+      const auto status = GetMessage(&msg, nullptr, DESKFLOW_MSG_MOUSE_MOVE, DESKFLOW_MSG_POST_WARP);
+      if (status <= 0) {
+        if (status == 0) {
+          PostQuitMessage(static_cast<int>(msg.wParam));
+        }
+        return true;
+      }
     } while (msg.message != DESKFLOW_MSG_POST_WARP);
+
+    // ClipCursor can clamp a successful SetCursorPos. The POST marker carries
+    // the measured position so the next event is not relative to a fictitious warp.
+    saveMousePosition(static_cast<int32_t>(msg.wParam), static_cast<int32_t>(msg.lParam));
   }
     return true;
 
@@ -1259,9 +1286,7 @@ bool MSWindowsComputer::onMouseMove(int32_t mx, int32_t my)
     // it's probably a bogus motion that we want to
     // ignore (see warpCursorNoFlush() for a further
     // description).
-    static int32_t bogusZoneSize = 10;
-    if (-x + bogusZoneSize > m_xCenter - m_x || x + bogusZoneSize > m_x + m_w - m_xCenter ||
-        -y + bogusZoneSize > m_yCenter - m_y || y + bogusZoneSize > m_y + m_h - m_yCenter) {
+    if (deskflow::platform::isBogusMouseDelta(x, y, m_xCenter, m_yCenter, m_parkingMonitorBounds)) {
 
       LOG_DEBUG("dropped bogus delta motion: %+d,%+d", x, y);
     } else {
@@ -1361,7 +1386,7 @@ void MSWindowsComputer::onClipboardChange()
   }
 }
 
-void MSWindowsComputer::warpCursorNoFlush(int32_t x, int32_t y)
+POINT MSWindowsComputer::warpCursorNoFlush(int32_t x, int32_t y)
 {
   // send an event that we can recognize before the mouse warp
   PostThreadMessage(GetCurrentThreadId(), DESKFLOW_MSG_PRE_WARP, x, y);
@@ -1371,7 +1396,7 @@ void MSWindowsComputer::warpCursorNoFlush(int32_t x, int32_t y)
   setThisCursorPos(x, y);
 
   // check to see if the mouse pos was set correctly
-  POINT cursorPos;
+  POINT cursorPos{m_xCursor, m_yCursor};
   getThisCursorPos(&cursorPos);
 
   // there is a bug or round error in SetCursorPos and GetCursorPos on
@@ -1389,6 +1414,7 @@ void MSWindowsComputer::warpCursorNoFlush(int32_t x, int32_t y)
       // something to do with the center computer warping technique used (see
       // comments for onMouseMove definition).
       fakeMouseMove(x, y);
+      getThisCursorPos(&cursorPos);
     }
   }
 
@@ -1411,7 +1437,8 @@ void MSWindowsComputer::warpCursorNoFlush(int32_t x, int32_t y)
   Arch::sleep(0.0);
 
   // send an event that we can recognize after the mouse warp
-  PostThreadMessage(GetCurrentThreadId(), DESKFLOW_MSG_POST_WARP, 0, 0);
+  PostThreadMessage(GetCurrentThreadId(), DESKFLOW_MSG_POST_WARP, cursorPos.x, cursorPos.y);
+  return cursorPos;
 }
 
 void MSWindowsComputer::nextMark()
@@ -1437,6 +1464,15 @@ void MSWindowsComputer::updateComputerShape()
   m_y = GetSystemMetrics(SM_YVIRTUALSCREEN);
   m_xCenter = GetSystemMetrics(SM_CXSCREEN) >> 1;
   m_yCenter = GetSystemMetrics(SM_CYSCREEN) >> 1;
+
+  m_parkingMonitorBounds = {0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+  MONITORINFO monitorInfo{};
+  monitorInfo.cbSize = sizeof(monitorInfo);
+  const auto monitor = MonitorFromPoint(POINT{m_xCenter, m_yCenter}, MONITOR_DEFAULTTOPRIMARY);
+  if (GetMonitorInfo(monitor, &monitorInfo)) {
+    const auto &bounds = monitorInfo.rcMonitor;
+    m_parkingMonitorBounds = {bounds.left, bounds.top, bounds.right, bounds.bottom};
+  }
 
   // check for multiple monitors
   m_multimon = (m_w != GetSystemMetrics(SM_CXSCREEN) || m_h != GetSystemMetrics(SM_CYSCREEN));

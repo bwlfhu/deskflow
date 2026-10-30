@@ -39,6 +39,7 @@ if(WIN32)
     MSWindowsClipboardUTF16Converter.h
     MSWindowsComputer.cpp
     MSWindowsComputer.h
+    MSWindowsMouseMotion.h
     MSWindowsDebugOutputter.cpp
     MSWindowsDebugOutputter.h
     MSWindowsDesks.cpp
