@@ -1,0 +1,142 @@
+# SPDX-FileCopyrightText: (C) 2026 Deskflow Developers
+# SPDX-License-Identifier: MIT
+name: CRLF macOS builds
+on:
+  push:
+    branches: [fix/clipboard-crlf]
+    paths: [.github/workflows/crlf-macos.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  SOURCE_REVISION: 1576cfc38de3f473fa5efea0ccfc14c9fdac4d25
+jobs:
+  mac:
+    name: macOS ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+            deployment: '13.0'
+          - runner: macos-15-intel
+            arch: x86_64
+            deployment: '12.0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_REVISION }}
+          fetch-depth: 0
+      - name: Verify source
+        run: test "$(git rev-parse HEAD)" = "$SOURCE_REVISION"
+      - uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.8.3'
+          arch: clang_64
+          cache: true
+          cache-key-prefix: crlf-${{ matrix.arch }}-qt683
+      - name: Install dependencies
+        run: brew install cmake ninja openssl@3
+      - name: Configure
+        run: >-
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_INSTALLER=OFF
+          -DBUILD_OSX_BUNDLE=ON
+          -DBUILD_TESTS=ON
+          -DSKIP_BUILD_TESTS=ON
+          -DCMAKE_OSX_ARCHITECTURES=${{ matrix.arch }}
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ matrix.deployment }}
+          -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3)"
+      - name: Build
+        run: cmake --build build --parallel 4
+      - name: Converter regression tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -o pipefail
+          ctest --test-dir build/src/unittests -R '^ClipboardLineEndingTests$' --output-on-failure 2>&1 | tee converter-tests.txt
+      - name: Other tests
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: |
+          set -o pipefail
+          ctest --test-dir build/src/unittests -E '^OSXKeyStateTests$' --output-on-failure 2>&1 | tee other-tests.txt
+          echo 'OSXKeyStateTests excluded: hardware key injection requires macOS Accessibility permission and a user desktop.' >> other-tests.txt
+      - name: Stage and deploy dependencies
+        run: |
+          set -euo pipefail
+          cmake --install build --prefix "$PWD/stage"
+          app="$PWD/stage/Deskflow.app"
+          macdeployqt "$app" -executable="$app/Contents/MacOS/deskflow-core" -always-overwrite -no-strip -codesign=-
+          codesign --verify --deep --strict --verbose=2 "$app"
+          file "$app/Contents/MacOS/Deskflow" "$app/Contents/MacOS/deskflow-core" | tee architecture.txt
+          lipo -verify_arch ${{ matrix.arch }} "$app/Contents/MacOS/Deskflow"
+          lipo -verify_arch ${{ matrix.arch }} "$app/Contents/MacOS/deskflow-core"
+          while IFS= read -r -d '' path; do
+            if file "$path" | grep -q 'Mach-O'; then
+              printf '%s\n' "${path#"$PWD/stage/"}" >> dylib-audit.txt
+              otool -L "$path" | tail -n +2 >> dylib-audit.txt
+            fi
+          done < <(find "$app" -type f -print0)
+          if grep -E '/opt/homebrew/|/usr/local/|/Users/runner/|/opt/hostedtoolcache/' dylib-audit.txt; then
+            echo 'Packaged app has a build-machine dependency' >&2
+            exit 1
+          fi
+          env -u QT_QPA_PLATFORM -u QT_PLUGIN_PATH -u QT_QPA_PLATFORM_PLUGIN_PATH -u DYLD_LIBRARY_PATH "$app/Contents/MacOS/deskflow-core" --version | tee version.txt
+          grep -q '1576cfc3' version.txt
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          name="deskflow-crlf-1576cfc3-macos-${{ matrix.arch }}.zip"
+          ditto -c -k --sequesterRsrc --keepParent stage/Deskflow.app "dist/$name"
+          shasum -a 256 "dist/$name" | sed 's|dist/||' > "dist/$name.sha256"
+          printf 'Source revision: %s\nArchitecture: %s\nMinimum macOS deployment target: %s\nSignature: ad-hoc, not Apple-notarized\n' "$SOURCE_REVISION" '${{ matrix.arch }}' '${{ matrix.deployment }}' > "dist/build-${{ matrix.arch }}.txt"
+          cat version.txt >> "dist/build-${{ matrix.arch }}.txt"
+          cp converter-tests.txt other-tests.txt architecture.txt version.txt dylib-audit.txt dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deskflow-crlf-macos-${{ matrix.arch }}
+          path: dist/
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-test-logs-${{ matrix.arch }}
+          path: |
+            converter-tests.txt
+            other-tests.txt
+            build/src/unittests/Testing/Temporary/
+            build/CMakeFiles/CMakeConfigureLog.yaml
+  publish:
+    needs: mac
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: deskflow-crlf-macos-*
+          path: artifacts
+      - name: Publish verified Mac packages
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir release
+          find artifacts -type f \( -name '*.zip' -o -name '*.sha256' -o -name 'build-*.txt' \) -exec cp {} release/ \;
+          cd release
+          cat *.sha256 > SHA256SUMS.txt
+          sha256sum --check SHA256SUMS.txt
+          printf '%s\n' 'Deskflow macOS builds from CRLF repair source 1576cfc38de3f473fa5efea0ccfc14c9fdac4d25, matching the deployed Windows repair.' '' 'Choose arm64 for Apple Silicon or x86_64 for Intel. Both packages include Deskflow.app and bundled Qt dependencies. Converter regression tests and other applicable unit tests passed; OSXKeyStateTests requires hardware input permissions and was excluded. These are local-use ad-hoc signed builds, not Apple-notarized releases. Back up the existing app and configuration before installation. macOS may require renewed Accessibility approval.' > notes.md
+          tag=crlf-macos-20261030
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" ./*.zip ./*.sha256 ./SHA256SUMS.txt ./build-*.txt --clobber
+          else
+            gh release create "$tag" --target "$SOURCE_REVISION" --prerelease --title 'Deskflow CRLF repair for macOS (1576cfc3)' --notes-file notes.md ./*.zip ./*.sha256 ./SHA256SUMS.txt ./build-*.txt
+          fi
