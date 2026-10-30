@@ -78,10 +78,11 @@ jobs:
           lipo "$app/Contents/MacOS/deskflow-core" -verify_arch ${{ matrix.arch }}
           while IFS= read -r -d '' path; do
             if file "$path" | grep -q 'Mach-O'; then
+              lipo "$path" -verify_arch ${{ matrix.arch }}
               printf '%s\n' "${path#"$PWD/stage/"}" >> dylib-audit.txt
-              otool -L "$path" | tail -n +2 >> dylib-audit.txt
+              otool -arch ${{ matrix.arch }} -L "$path" | awk '/^[[:space:]]/{print}' >> dylib-audit.txt
               printf '%s\n' "${path#"$PWD/stage/"}" >> minimum-os-audit.txt
-              otool -l "$path" | awk '/LC_BUILD_VERSION/{kind=1} /LC_VERSION_MIN_MACOSX/{kind=2} kind==1 && /minos /{print;kind=0} kind==2 && /version /{print;kind=0}' >> minimum-os-audit.txt
+              otool -arch ${{ matrix.arch }} -l "$path" | awk '/LC_BUILD_VERSION/{kind=1} /LC_VERSION_MIN_MACOSX/{kind=2} kind==1 && /minos /{print;kind=0} kind==2 && /version /{print;kind=0}' >> minimum-os-audit.txt
             fi
           done < <(find "$app" -type f -print0)
           if grep -E '/opt/homebrew/|/usr/local/|/Users/runner/|/opt/hostedtoolcache/' dylib-audit.txt; then
@@ -112,6 +113,9 @@ jobs:
           path: |
             converter-tests.txt
             other-tests.txt
+            dylib-audit.txt
+            minimum-os-audit.txt
+            version.txt
             build/src/unittests/Testing/Temporary/
             build/CMakeFiles/CMakeConfigureLog.yaml
   publish:
