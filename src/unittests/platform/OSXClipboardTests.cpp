@@ -9,6 +9,7 @@
 #include "OSXClipboardTests.h"
 
 #include "platform/OSXClipboard.h"
+#include "platform/OSXClipboardBMPConverter.h"
 #include "platform/OSXClipboardPNGConverter.h"
 #include "platform/OSXClipboardUTF8Converter.h"
 
@@ -78,12 +79,15 @@ void OSXClipboardTests::pngBitmapConverterRoundTrip()
   QCOMPARE(image.pixelColor(1, 0), QColor(0, 255, 0, 255));
 
   const auto roundTrip = converter.toIClipboard(png);
-  QCOMPARE(roundTrip.size(), dib.size());
   QVERIFY(roundTrip.size() >= 40);
-  const auto *roundHeader = reinterpret_cast<const quint8 *>(roundTrip.data());
-  QCOMPARE(qFromLittleEndian<qint32>(roundHeader + 4), qint32(2));
-  QCOMPARE(qFromLittleEndian<qint32>(roundHeader + 8), qint32(1));
-  QCOMPARE(QByteArray(roundTrip.data() + 40, 8), QByteArray(reinterpret_cast<const char *>(pixels), 8));
+  OSXClipboardBMPConverter bmpConverter;
+  const auto bmp = bmpConverter.fromIClipboard(roundTrip);
+  const auto roundTripImage = QImage::fromData(
+      QByteArray::fromRawData(bmp.data(), static_cast<int>(bmp.size())), "BMP"
+  );
+  QCOMPARE(roundTripImage.size(), QSize(2, 1));
+  QCOMPARE(roundTripImage.pixelColor(0, 0), QColor(255, 0, 0, 255));
+  QCOMPARE(roundTripImage.pixelColor(1, 0), QColor(0, 255, 0, 255));
 }
 
 QTEST_MAIN(OSXClipboardTests)
