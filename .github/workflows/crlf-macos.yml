@@ -139,7 +139,7 @@ jobs:
           cd release
           cat *.sha256 > SHA256SUMS.txt
           sha256sum --check SHA256SUMS.txt
-          printf '%s\n' 'Deskflow macOS builds from CRLF repair source 1576cfc38de3f473fa5efea0ccfc14c9fdac4d25, matching the deployed Windows repair.' '' 'Requires macOS 15 or later. Choose arm64 for Apple Silicon or x86_64 for Intel. Both packages include Deskflow.app and bundled Qt dependencies. Converter regression tests and other applicable unit tests passed; OSXKeyStateTests requires hardware input permissions and was excluded. These are local-use ad-hoc signed builds, not Apple-notarized releases. Back up the existing app and configuration before installation. macOS may require renewed Accessibility approval.' > notes.md
+          printf 'Deskflow macOS PNG clipboard fix from source %s, matching the deployed Windows repair.\n\nRequires macOS 15 or later. Choose arm64 for Apple Silicon or x86_64 for Intel. Both packages include Deskflow.app and bundled Qt dependencies. Converter regression tests and other applicable unit tests passed; OSXKeyStateTests requires hardware input permissions and was excluded. These are local-use ad-hoc signed builds, not Apple-notarized releases. Back up the existing app and configuration before installation. macOS may require renewed Accessibility approval.\n' "$SOURCE_REVISION" > notes.md
           tag=macos-png-20261101
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" ./*.zip ./*.sha256 ./SHA256SUMS.txt ./build-*.txt --clobber
