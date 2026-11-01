@@ -3,13 +3,13 @@
 name: CRLF macOS builds
 on:
   push:
-    branches: [fix/clipboard-crlf]
-    paths: [.github/workflows/crlf-macos.yml]
+    branches: [fix/clipboard-crlf, fix/mac-png-clipboard]
+    paths: [.github/workflows/crlf-macos.yml, src/lib/platform/OSXClipboard.cpp, src/lib/platform/OSXClipboardPNGConverter.cpp, src/lib/platform/OSXClipboardPNGConverter.h, src/unittests/platform/OSXClipboardTests.cpp, src/unittests/platform/OSXClipboardTests.h, src/unittests/platform/CMakeLists.txt]
   workflow_dispatch:
 permissions:
   contents: read
 env:
-  SOURCE_REVISION: 1576cfc38de3f473fa5efea0ccfc14c9fdac4d25
+  SOURCE_REVISION: ${{ github.sha }}
 jobs:
   mac:
     name: macOS ${{ matrix.arch }}
@@ -90,12 +90,12 @@ jobs:
             exit 1
           fi
           env -u QT_QPA_PLATFORM -u QT_PLUGIN_PATH -u QT_QPA_PLATFORM_PLUGIN_PATH -u DYLD_LIBRARY_PATH "$app/Contents/MacOS/deskflow-core" --version | tee version.txt
-          grep -q '1576cfc3' version.txt
+          grep -q "$(git rev-parse --short=8 HEAD)" version.txt
       - name: Package
         run: |
           set -euo pipefail
           mkdir -p dist
-          name="deskflow-crlf-1576cfc3-macos-${{ matrix.arch }}.zip"
+          name="deskflow-mac-png-${{ github.sha }}-${{ matrix.arch }}.zip"
           ditto -c -k --sequesterRsrc --keepParent stage/Deskflow.app "dist/$name"
           shasum -a 256 "dist/$name" | sed 's|dist/||' > "dist/$name.sha256"
           printf 'Source revision: %s\nArchitecture: %s\nMinimum supported macOS: %s (built and tested on macOS 15)\nSignature: ad-hoc, not Apple-notarized\n' "$SOURCE_REVISION" '${{ matrix.arch }}' '${{ matrix.deployment }}' > "dist/build-${{ matrix.arch }}.txt"
@@ -140,9 +140,9 @@ jobs:
           cat *.sha256 > SHA256SUMS.txt
           sha256sum --check SHA256SUMS.txt
           printf '%s\n' 'Deskflow macOS builds from CRLF repair source 1576cfc38de3f473fa5efea0ccfc14c9fdac4d25, matching the deployed Windows repair.' '' 'Requires macOS 15 or later. Choose arm64 for Apple Silicon or x86_64 for Intel. Both packages include Deskflow.app and bundled Qt dependencies. Converter regression tests and other applicable unit tests passed; OSXKeyStateTests requires hardware input permissions and was excluded. These are local-use ad-hoc signed builds, not Apple-notarized releases. Back up the existing app and configuration before installation. macOS may require renewed Accessibility approval.' > notes.md
-          tag=crlf-macos-20261030
+          tag=macos-png-20261101
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" ./*.zip ./*.sha256 ./SHA256SUMS.txt ./build-*.txt --clobber
           else
-            gh release create "$tag" --target "$SOURCE_REVISION" --prerelease --title 'Deskflow CRLF repair for macOS (1576cfc3)' --notes-file notes.md ./*.zip ./*.sha256 ./SHA256SUMS.txt ./build-*.txt
+            gh release create "$tag" --target "$SOURCE_REVISION" --prerelease --title 'Deskflow macOS PNG clipboard fix' --notes-file notes.md ./*.zip ./*.sha256 ./SHA256SUMS.txt ./build-*.txt
           fi

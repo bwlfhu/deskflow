@@ -9,7 +9,11 @@
 #include "OSXClipboardTests.h"
 
 #include "platform/OSXClipboard.h"
+#include "platform/OSXClipboardPNGConverter.h"
 #include "platform/OSXClipboardUTF8Converter.h"
+
+#include <QImage>
+#include <QtEndian>
 
 void OSXClipboardTests::open()
 {
@@ -37,6 +41,49 @@ void OSXClipboardTests::formatConvert_UTF8()
   QCOMPARE(converter.getOSXFormat(), CFSTR("public.utf8-plain-text"));
   QCOMPARE(converter.fromIClipboard("test data\n"), "test data\r");
   QCOMPARE(converter.toIClipboard("test data\r"), "test data\n");
+}
+
+void OSXClipboardTests::pngBitmapConverterRoundTrip()
+{
+  OSXClipboardPNGConverter converter;
+  QCOMPARE(converter.getFormat(), IClipboard::Format::Bitmap);
+  QCOMPARE(converter.getOSXFormat(), CFSTR("public.png"));
+
+  // A 2x1 bottom-up 32-bit BI_RGB DIB with two known RGB pixels.
+  std::string dib(40 + 8, '\0');
+  auto *header = reinterpret_cast<quint8 *>(dib.data());
+  qToLittleEndian<quint32>(40, header);
+  qToLittleEndian<qint32>(2, header + 4);
+  qToLittleEndian<qint32>(1, header + 8);
+  qToLittleEndian<quint16>(1, header + 12);
+  qToLittleEndian<quint16>(32, header + 14);
+  qToLittleEndian<quint32>(0, header + 16);
+  auto *pixels = reinterpret_cast<quint8 *>(dib.data() + 40);
+  // BGRA: red, then green.
+  pixels[0] = 0;
+  pixels[1] = 0;
+  pixels[2] = 255;
+  pixels[3] = 255;
+  pixels[4] = 0;
+  pixels[5] = 255;
+  pixels[6] = 0;
+  pixels[7] = 255;
+
+  const auto png = converter.fromIClipboard(dib);
+  QVERIFY(png.size() > 8);
+  QCOMPARE(QByteArray(png.data(), 8), QByteArray::fromHex("89504e470d0a1a0a"));
+  const auto image = QImage::fromData(QByteArray::fromRawData(png.data(), static_cast<int>(png.size())), "PNG");
+  QCOMPARE(image.size(), QSize(2, 1));
+  QCOMPARE(image.pixelColor(0, 0), QColor(255, 0, 0, 255));
+  QCOMPARE(image.pixelColor(1, 0), QColor(0, 255, 0, 255));
+
+  const auto roundTrip = converter.toIClipboard(png);
+  QCOMPARE(roundTrip.size(), dib.size());
+  QVERIFY(roundTrip.size() >= 40);
+  const auto *roundHeader = reinterpret_cast<const quint8 *>(roundTrip.data());
+  QCOMPARE(qFromLittleEndian<qint32>(roundHeader + 4), qint32(2));
+  QCOMPARE(qFromLittleEndian<qint32>(roundHeader + 8), qint32(1));
+  QCOMPARE(QByteArray(roundTrip.data() + 40, 8), QByteArray(reinterpret_cast<const char *>(pixels), 8));
 }
 
 QTEST_MAIN(OSXClipboardTests)

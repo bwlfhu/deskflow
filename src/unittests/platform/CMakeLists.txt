@@ -31,7 +31,7 @@ elseif(APPLE)
   create_test(
     NAME OSXClipboardTests
     DEPENDS platform
-    LIBS base arch
+    LIBS base arch Qt6::Gui
     SOURCE OSXClipboardTests.cpp
     WORKING_DIRECTORY "${CMAKE_BINARY_DIR}/src/lib/platform"
   )
